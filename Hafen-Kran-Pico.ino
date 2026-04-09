@@ -56,12 +56,6 @@ int       inputPins[ NUM_INPUTS ] = { 16, 5, 4, 3, 2 };
 
 Servo     servos[ NUM_CRANES ];
 
-const uint32_t SERVO_INTERVAL_US = 20000; // 20 ms ... tst
-uint32_t lastServoUpdateUs = 0;
-
-int lastServoValue[NUM_CRANES];
-int lastServoWrite[NUM_CRANES];
-
 //----------------------------------------------------------------------------------------
 // Input System Declarations. We have a number of inputs, which are connected to 
 // buttons or contacts. The input system handles debouncing and provides the current
@@ -70,6 +64,7 @@ int lastServoWrite[NUM_CRANES];
 //----------------------------------------------------------------------------------------
 bool            inputState[ NUM_INPUTS ];
 bool            inputPressed[ NUM_INPUTS ];
+bool            inputReleased[NUM_INPUTS];
 bool            prevState[ NUM_INPUTS ];
 bool            lastRawState[ NUM_INPUTS ];
 uint32_t        lastChangeTime[ NUM_INPUTS ];
@@ -92,11 +87,12 @@ enum NamedButtons : int {
 //----------------------------------------------------------------------------------------
 struct CranePositions {
 
-    uint16_t  pos1[ NUM_CRANES ]   = { 40, 50, 60, 45, 40, 50, 60, 40  };
-    uint16_t  pos2 [NUM_CRANES ]   = { 140,130,120,135, 140,130,120,135 };
-    uint16_t  pos3[ NUM_CRANES ]   = { 0, 0, 0, 0, 0, 0, 0, 0 };
-    uint16_t  pos4[ NUM_CRANES ]   = { 0, 0, 0, 0, 0, 0, 0, 0 };
-    float     speed[ NUM_CRANES ]  = { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+    uint16_t  pos1[ NUM_CRANES ];
+    uint16_t  pos2 [NUM_CRANES ];
+    uint16_t  pos3[ NUM_CRANES ];
+    uint16_t  pos4[ NUM_CRANES ];
+    uint16_t  stepSizeUs[ NUM_CRANES ];
+    uint16_t  stepIntervalMs[ NUM_CRANES ];
 };
 
 CranePositions cranePositions;
@@ -125,17 +121,15 @@ int harborCranes[ NUM_HARBORS ][ CRANES_PER_HARBOR ] = {
 struct HarborData {
 
     HarborState state;
-    uint32_t    stateUntil;
-
-    int cranes[ CRANES_PER_HARBOR ];
+    int         cranes[ CRANES_PER_HARBOR ];
 };
 
 HarborData harborData[ NUM_HARBORS ] = {
 
-    { HARBOR_IDLE, 0, { 0, 1 }},
-    { HARBOR_IDLE, 0, { 2, 3 }},
-    { HARBOR_IDLE, 0, { 4, 5 }},
-    { HARBOR_IDLE, 0, { 6, 7 }}
+    { HARBOR_IDLE, { 0, 1 }},
+    { HARBOR_IDLE, { 2, 3 }},
+    { HARBOR_IDLE, { 4, 5 }},
+    { HARBOR_IDLE, { 6, 7 }}
 };
 
 //----------------------------------------------------------------------------------------
@@ -158,17 +152,18 @@ enum CraneState {
 struct Crane {
 
     // --- State machine ---
-    uint8_t  state;
-    uint32_t stateUntil;
+    CraneState  state;
+    uint32_t    stateUntil;
 
     // --- Motion ---
-    float    pos;        // current position
-    float    startPos;
-    float    targetPos;
-
-    uint32_t startTimeUs;
-    uint32_t durationUs;
-    bool     moving;
+    bool        moving;
+    float       pos;
+    float       targetPos;
+    
+    // --- Movement control ---
+    uint16_t    stepSizeUs;        // µs per step (e.g. 6–10)
+    uint16_t    stepIntervalMs;    // time between steps
+    uint32_t    lastStepTimeTs;    // last step timestamp
 };
 
 Crane crane[ NUM_CRANES ];
@@ -178,18 +173,10 @@ Crane crane[ NUM_CRANES ];
 // range. 
 //
 //----------------------------------------------------------------------------------------
-int clamp( int arg, int low, int high ) {
-
-    if ( arg < low ) arg = low;
-    if ( arg > high ) arg = high;
-    return( arg );
-}
-
-float clamp( float arg, float low, float high ) {
-
-    if ( arg < low ) arg = low;
-    if ( arg > high ) arg = high;
-    return( arg );
+uint16_t clamp16(int v, int low, int high) {
+    if (v < low) return low;
+    if (v > high) return high;
+    return v;
 }
 
 //----------------------------------------------------------------------------------------
@@ -209,8 +196,10 @@ void printCranePositions( int i ) {
     Serial.print( cranePositions.pos3[ i ] );
     Serial.print(": Pos4: " );
     Serial.print( cranePositions.pos4[ i ] );
-    Serial.print(": Speed: " );
-    Serial.print( cranePositions.speed[ i ] );
+    Serial.print(": Interval(ms): " );
+    Serial.print( cranePositions.stepIntervalMs[ i ] );
+    Serial.print(": Step(us): " );
+    Serial.print( cranePositions.stepSizeUs[ i ] );
     Serial.println( );
 }
 
@@ -242,17 +231,23 @@ void loadCraneSettingsFromEEPROM( ) {
     
     for ( int i = 0; i < NUM_CRANES; i++ ) {
 
-        cranePositions.pos1[ i ]  = clamp( cranePositions.pos1[ i ], 1000, 2000 );
-        cranePositions.pos2[ i ]  = clamp( cranePositions.pos2[ i ], 1000, 2000 );
-        cranePositions.pos3[ i ]  = clamp( cranePositions.pos3[ i ], 1000, 2000 );
-        cranePositions.pos4[ i ]  = clamp( cranePositions.pos4[ i ], 1000, 2000 );
-
-        if ( isfinite( cranePositions.speed[ i ] )) 
-            cranePositions.speed[ i ] = clamp( cranePositions.speed[ i ], 0.1, 5.0 );
-        else
-            cranePositions.speed[ i ] = 1.0;
+        cranePositions.pos1[ i ]            = clamp16( cranePositions.pos1[ i ], 1000, 2000 );
+        cranePositions.pos2[ i ]            = clamp16( cranePositions.pos2[ i ], 1000, 2000 );
+        cranePositions.pos3[ i ]            = clamp16( cranePositions.pos3[ i ], 1000, 2000 );
+        cranePositions.pos4[ i ]            = clamp16( cranePositions.pos4[ i ], 1000, 2000 );
+        cranePositions.stepSizeUs[ i ]      = clamp16( cranePositions.stepSizeUs[ i ], 2, 20 );
+        cranePositions.stepIntervalMs[ i ]  = clamp16( cranePositions.stepIntervalMs[ i ], 4, 100 ); 
 
         printCranePositions( i );
+    }
+}
+
+void applyCraneSettingsToRuntime( ) {
+
+    for ( int i = 0; i < NUM_CRANES; i++ ) {
+      
+        crane[ i ].stepSizeUs     = cranePositions.stepSizeUs[ i ];
+        crane[ i ].stepIntervalMs = cranePositions.stepIntervalMs[ i ];
     }
 }
 
@@ -306,24 +301,24 @@ int readLine( String &out ) {
 // integers and speed is a float.
 //
 //----------------------------------------------------------------------------------------
-int readConfigArguments( int &a, int &b, int &c, int &d, float &speed ) {
+int readConfigArguments( int &a, int &b, int &c, int &d, int &e, int &f ) {
 
     String line;
 
     if ( readLine( line ) == 0 ) return ( 0 );
 
-    int tmpA, tmpB, tmpC, tmpD;
-    float tmpSpeed;
-    int count = sscanf( line.c_str( ), "%d %d %d %d %f", 
-                        &tmpA, &tmpB, &tmpC, &tmpD, &tmpSpeed );
+    int tmpA, tmpB, tmpC, tmpD, tmpE, tmpF;
+    int count = sscanf( line.c_str( ), "%d %d %d %d %d %d", 
+                        &tmpA, &tmpB, &tmpC, &tmpD, &tmpE, &tmpF );
 
-    if ( count == 5 ) {
+    if ( count == 6 ) {
     
-        a       = tmpA;
-        b       = tmpB;
-        c       = tmpC;
-        d       = tmpD;
-        speed   = tmpSpeed;
+        a = tmpA;
+        b = tmpB;
+        c = tmpC;
+        d = tmpD;
+        e = tmpE;
+        f = tmpF;
         return ( count );
     }
 
@@ -347,20 +342,20 @@ void demoCraneSettings( int i ) {
     Serial.println( i );
 
     moveServo( i, cranePositions.pos1[ i ] );
-    while ( crane[ i ].moving ) handleServos( );
-    delay( 1000 );
+    while ( crane[ i ].moving ) handleServo( i );
+    delay( 500 );
 
     moveServo( i, cranePositions.pos2[ i ] );
-    while ( crane[ i ].moving) handleServos( );
-    delay( 1000 );
+    while ( crane[ i ].moving) handleServo( i );
+    delay( 500 );
 
     moveServo( i, cranePositions.pos3[ i ] );
-    while (crane[ i ].moving) handleServos( );
-    delay( 1000 );
+    while (crane[ i ].moving) handleServo( i );
+    delay( 500 );
 
     moveServo(  i, cranePositions.pos4[ i ] );
-    while ( crane[ i ].moving) handleServos();
-    delay( 1000 );
+    while ( crane[ i ].moving) handleServo( i );
+    delay( 500 );
 }
 
 //----------------------------------------------------------------------------------------
@@ -385,27 +380,28 @@ void calibrate( ) {
     
         while ( true ) {
     
-            int newPos1, newPos2, newPos3, newPos4, cnt;
-            float newSpeed;
+            int newPos1, newPos2, newPos3, newPos4, newStep, newInterval, cnt;
         
             Serial.print(" -> ");
-            cnt = readConfigArguments( newPos1, newPos2, newPos3, newPos4, newSpeed );
+            cnt = readConfigArguments( newPos1, newPos2, newPos3, newPos4, 
+                                       newInterval, newStep );
         
             if ( cnt == 0 ) {
 
                 break;
             }
-            else if ( cnt == 5 ) {
+            else if ( cnt == 6 ) {
 
-                cranePositions.pos1[ i ]  = clamp( newPos1, 1000, 2000 );
-                cranePositions.pos2[ i ]  = clamp( newPos2, 1000, 2000 );    
-                cranePositions.pos3[ i ]  = clamp( newPos3, 1000, 2000 );
-                cranePositions.pos4[ i ]  = clamp (newPos4, 1000, 2000 );
-                cranePositions.speed[ i ] = newSpeed;
+                cranePositions.pos1[ i ]  = clamp16( newPos1, 1000, 2000 );
+                cranePositions.pos2[ i ]  = clamp16( newPos2, 1000, 2000 );    
+                cranePositions.pos3[ i ]  = clamp16( newPos3, 1000, 2000 );
+                cranePositions.pos4[ i ]  = clamp16( newPos4, 1000, 2000 );
+                cranePositions.stepSizeUs[ i ]  = clamp16( newStep, 2, 20 );
+                cranePositions.stepIntervalMs[ i ] = clamp16( newInterval, 4, 100 );
 
                 demoCraneSettings( i );
             } 
-            else Serial.println( "Expected four integers and one float" );
+            else Serial.println( "Expected six integers" );
         }
     
         Serial.println( );
@@ -457,8 +453,9 @@ void updateInputs( ) {
 
         if (( now - lastChangeTime[ i ] ) > debounceTime ) inputState[ i ] = raw;
 
-        inputPressed[ i ] = ( ! prevState[ i ] && inputState[ i ]);
-        prevState[ i ]    = inputState[ i ];
+        inputPressed[ i ]  = ( ! prevState[ i ] && inputState[ i ]);
+        inputReleased[ i ] = ( prevState[ i ] && ! inputState[ i ] );
+        prevState[ i ]     = inputState[ i ];
     }
 }
 
@@ -471,39 +468,15 @@ void updateInputs( ) {
 //----------------------------------------------------------------------------------------
 void handleInputs( ) {
 
-    if ( inputPressed[ BUTTON_CALIB ] ) calibrate( );
-
-    if ( inputPressed[ CONTACT_IN_1 ] ) {
-
-        Serial.println( "Harbor 0 Active" );
-        harborData[ 0 ].state = ( harborData[ 0 ].state == HARBOR_ACTIVE ) ? 
-                                HARBOR_ACTIVE : HARBOR_IDLE;
-        harborData[ 0 ].stateUntil = millis( ) + 60 * 1000;
+    if ( inputPressed[ BUTTON_CALIB ] ) {
+      
+        calibrate();
     }
 
-    if ( inputPressed[ CONTACT_IN_2 ] ) {
-
-        Serial.println( "Harbor 1 Active" );
-        harborData[ 1 ].state = ( harborData[ 1 ].state == HARBOR_ACTIVE ) ? 
-                                HARBOR_ACTIVE : HARBOR_IDLE;
-        harborData[ 1 ].stateUntil = millis( ) + 60 * 1000;
-    }
-
-    if ( inputPressed[ CONTACT_IN_3 ] ) {
-        
-        Serial.println( "Harbor 2 Active" );
-        harborData[ 2 ].state = ( harborData[ 2 ].state == HARBOR_ACTIVE ) ? 
-                                HARBOR_ACTIVE : HARBOR_IDLE;
-        harborData[ 2 ].stateUntil = millis( ) + 60 * 1000;
-    }
-
-    if ( inputPressed[ CONTACT_IN_4 ] ) {
-        
-        Serial.println( "Harbor 3 Active" );
-        harborData[ 3 ].state = ( harborData[ 3 ].state == HARBOR_ACTIVE ) ? 
-                                HARBOR_ACTIVE : HARBOR_IDLE;
-        harborData[ 3 ].stateUntil = millis( ) + 60 * 1000;
-    }
+    harborData[ 0 ].state = inputState[ CONTACT_IN_1 ] ? HARBOR_ACTIVE : HARBOR_IDLE;
+    harborData[ 1 ].state = inputState[ CONTACT_IN_2 ] ? HARBOR_ACTIVE : HARBOR_IDLE;
+    harborData[ 2 ].state = inputState[ CONTACT_IN_3 ] ? HARBOR_ACTIVE : HARBOR_IDLE;
+    harborData[ 3 ].state = inputState[ CONTACT_IN_4 ] ? HARBOR_ACTIVE : HARBOR_IDLE;
 }
 
 //----------------------------------------------------------------------------------------
@@ -511,77 +484,76 @@ void handleInputs( ) {
 // The current position of each servo a is updated based on the target position and 
 // time to get there. 
 //
-// ??? really look into this .....
+//----------------------------------------------------------------------------------------
+void handleServo( int i ) {
+
+    uint32_t now = millis();
+
+    Crane &c = crane[i];
+
+    if ( ! c.moving ) return;
+
+    if ( abs( c.targetPos - c.pos ) < 3.0f ) {
+        
+        c.pos = c.targetPos;
+        c.moving = false;
+        return;
+    }
+
+    // timing control
+    if ( now - c.lastStepTimeTs < c.stepIntervalMs ) return;
+
+    c.lastStepTimeTs = now;
+
+    float diff = c.targetPos - c.pos;
+
+    if ( abs(diff) <= c.stepSizeUs ) {
+
+        c.pos = c.targetPos;
+        c.moving = false;
+
+    } else {
+
+        float step = ( diff > 0 ) ? c.stepSizeUs : -c.stepSizeUs;
+        c.pos += step;
+    }
+
+    servos[i].writeMicroseconds((int)( c.pos + 0.5f ));
+}
+
+//----------------------------------------------------------------------------------------
+// Run through all the servos.
+//
+//
 //----------------------------------------------------------------------------------------
 void handleServos( ) {
 
-    uint32_t now = micros();
-
-    for ( int i = 0; i < NUM_CRANES; i++ ) {
-
-        Crane &c = crane[ i ];
-
-        if ( ! c.moving ) continue;
-
-        float t = (float)( now - c.startTimeUs ) / (float) c.durationUs;
-
-        if ( t >= 1.0f ) {
-
-            t = 1.0f;
-            c.moving = false;
-        }
-
-        t = t * t * ( 3.0f - 2.0f * t ); // easing
-
-        float newPos = c.startPos + ( c.targetPos - c.startPos ) * t;
-
-        c.pos = newPos;
-
-        int out = (int)( newPos + 0.5f );
-
-        if ( now - lastServoWrite[ i ] >= 5000 ) {   // 5ms = 200Hz max update
-
-            if ( abs( out - lastServoValue[ i ]) >= 2 ) {
-
-                servos[ i ].writeMicroseconds( out );
-                lastServoValue[ i ] = out;
-            }
-
-            lastServoWrite[ i ] = now;
-        }
-    }
+   for ( int i = 0; i < NUM_CRANES; i++ ) handleServo( i );
 }
 
 //----------------------------------------------------------------------------------------
 // Move the servo to the target position. The routine calculates the distance to the 
-// target position and moves the servo accordingly. If the distance is small, the routine
-// returns immediately. The movement speed is based on the crane settings and is 
-// randomized a bit to create a more natural movement. The duration of the movement is
-// calculated based on the distance and the speed, and is clamped to a reasonable range. 
-// The routine updates the crane state to indicate that the crane is moving, and records
-// the start time and duration of the movement. The routine is used by the harbor behavior
-// to set the move parameters for the crane to the pickup and dropoff positions based 
-// on the current state of the crane.
+// target position and sets the servo parameters accordingly.
 //
 //----------------------------------------------------------------------------------------
-void moveServo( int i, float target ) {
+void moveServo(int i, float target) {
 
-    Crane &c = crane[ i ];
+    Crane &c = crane[i];
 
-    float distance = abs( target - c.pos );
-    if ( distance < 1.0f ) return;
+    c.targetPos       = target;
+    c.moving          = true;
+    c.lastStepTimeTs  = millis( ) - c.stepIntervalMs;
 
-    float speed = cranePositions.speed[ i ];
-    speed *= random( 90, 110 ) / 100.0f;
-
-    uint32_t durationMs = (uint32_t)( distance / speed );
-    durationMs = clamp( durationMs, 500, 8000 );
-
-    c.startPos    = c.pos;
-    c.targetPos   = target;
-    c.startTimeUs = micros();
-    c.durationUs  = durationMs * 1000;
-    c.moving      = true;
+    #if 1
+    Serial.print("Move servo ");
+    Serial.print(i);
+    Serial.print(" to ");
+    Serial.print( target );
+    Serial.print( " time: " );
+    Serial.print( c.stepIntervalMs );
+    Serial.print( " step: " );
+    Serial.println( c.stepSizeUs );
+    #endif
 }
 
 //----------------------------------------------------------------------------------------
@@ -601,8 +573,8 @@ void moveServo( int i, float target ) {
 //----------------------------------------------------------------------------------------
 void craneBehavior( int harbor, int i ) {
 
-    Crane    &c  = crane[i];
-    uint32_t now = millis();
+    Crane    &c  = crane[ i ];
+    uint32_t now = millis( );
 
     if ( now < c.stateUntil ) return;
 
@@ -612,7 +584,7 @@ void craneBehavior( int harbor, int i ) {
 
         case IDLE: {
 
-            if ( random(100) < activationChance ) {
+            if ( random( 100 ) < activationChance ) {
 
                 c.state = MOVE_TO_PICKUP;
 
@@ -625,8 +597,8 @@ void craneBehavior( int harbor, int i ) {
 
         case MOVE_TO_PICKUP: {
 
-            if ( ! c.moving ) {
-
+           if ( !c.moving ) {
+                
                 c.state      = LOAD;
                 c.stateUntil = now + random( 2000, 4000 );
             }
@@ -636,15 +608,16 @@ void craneBehavior( int harbor, int i ) {
         case LOAD: {
 
             c.state = MOVE_TO_DROPOFF;
+            c.stateUntil = now + random(3000, 8000);
 
-            float target = cranePositions.pos2[ i ] + random( -3, 4 );
-            moveServo(i, target);
+            float target = cranePositions.pos2[ i ] + random( -20, 40 );
+            moveServo( i, target);
         
         } break;
 
         case MOVE_TO_DROPOFF: {
 
-            if ( ! c.moving ) {
+            if ( !c.moving ) {
 
                 c.state      = UNLOAD;
                 c.stateUntil = now + random(2000, 4000);
@@ -666,7 +639,7 @@ void craneBehavior( int harbor, int i ) {
 // behavior routine.
 //
 //----------------------------------------------------------------------------------------
-void harborBehavior() {
+void harborBehavior( ) {
 
     for ( int h = 0; h < NUM_HARBORS; h++ ) {
 
@@ -708,21 +681,55 @@ void setupCranes( ) {
 
     for ( int i = 0; i < NUM_CRANES; i++ ) {
 
-        servos[ i ].attach(servoPins[ i ]);
+        servos[ i ].attach( servoPins[ i ] );
 
-        crane[ i ].state        = IDLE;
-        crane[ i ].pos          = cranePositions.pos1[ i ];
-        crane[ i ].targetPos    = crane[ i ].pos;
-        crane[ i ].moving       = false;
+        crane[ i ].state          = IDLE;
+        crane[ i ].pos            = 1500;
+        crane[ i ].targetPos      = 1500;
+        crane[ i ].stepIntervalMs = 80;
+        crane[ i ].stepSizeUs     = 8;
+        crane[ i ].moving         = false;
+        crane[ i ].stateUntil     = millis( ) + random( 1000, 5000 );
+    }
+}
 
-        crane[ i ].startTimeUs  = micros( );
-      //  crane[ i ].lastUpdateUs = crane[ i ].startTimeUs;  // ??? impact ?
-        crane[ i ].stateUntil   = millis() + random( 1000, 5000 );
+//----------------------------------------------------------------------------------------
+// A litttle helper to see if we can handle a servo. Used for debugging. The servo
+// sweeps up and down. We use servo slot 0.
+//
+//----------------------------------------------------------------------------------------
+void testRun( ) {
 
-        int val = (int)crane[ i ].pos;
+    static int      pos          = 1000;
+    static int      dir          = +1;
+    static uint32_t lastStepTime = 0;
 
-        servos[ i ].writeMicroseconds( val );
-        lastServoValue[ i ] = val; 
+    const int       STEP = 4;          // servo-friendly step (prevents jitter)
+    const int       INTERVAL = 20;     // ms between steps → controls speed
+
+    while ( true ) {
+
+        uint32_t now = millis( );
+
+        // only move every INTERVAL ms
+        if ( now - lastStepTime >= INTERVAL ) {
+
+            lastStepTime = now;
+            pos          += dir * STEP;
+            
+            if (pos >= 2000) {
+              
+                pos = 2000;
+                dir = -1;
+            }
+            else if ( pos <= 1000 ) {
+              
+                pos = 1000;
+                dir = +1;
+            }
+
+            servos[ 0 ].writeMicroseconds( pos );
+        }
     }
 }
 
@@ -741,6 +748,9 @@ void setup( ) {
     setupInputs( );
     loadCraneSettingsFromEEPROM( );
     setupCranes( );
+    applyCraneSettingsToRuntime( );
+
+    // testRun( );
 }
 
 //----------------------------------------------------------------------------------------
@@ -750,7 +760,7 @@ void setup( ) {
 // trains, as well as timed behavior. 
 //
 //----------------------------------------------------------------------------------------
-void loop() {
+void loop( ) {
 
     updateInputs( );
     handleInputs( );
