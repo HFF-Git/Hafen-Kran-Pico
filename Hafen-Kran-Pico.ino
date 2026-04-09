@@ -173,9 +173,10 @@ Crane crane[ NUM_CRANES ];
 // range. 
 //
 //----------------------------------------------------------------------------------------
-uint16_t clamp16(int v, int low, int high) {
-    if (v < low) return low;
-    if (v > high) return high;
+uint16_t clamp16( int v, int low, int high ) {
+  
+    if ( v < low ) return low;
+    if ( v > high ) return high;
     return v;
 }
 
@@ -276,7 +277,7 @@ void updateCraneSettingsInEEPROM( ) {
 //----------------------------------------------------------------------------------------
 int readLine( String &out ) {
 
-    if (!Serial) return ( 0 );
+    if ( ! Serial ) return ( 0 );
 
     out = "";
 
@@ -338,7 +339,7 @@ int readConfigArguments( int &a, int &b, int &c, int &d, int &e, int &f ) {
 //----------------------------------------------------------------------------------------
 void demoCraneSettings( int i ) {
 
-    Serial.print( "Demo settings for Crane" );
+    Serial.print( "Demo settings for Crane " );
     Serial.println( i );
 
     moveServo( i, cranePositions.pos1[ i ] );
@@ -350,7 +351,7 @@ void demoCraneSettings( int i ) {
     delay( 500 );
 
     moveServo( i, cranePositions.pos3[ i ] );
-    while (crane[ i ].moving) handleServo( i );
+    while ( crane[ i ].moving) handleServo( i );
     delay( 500 );
 
     moveServo(  i, cranePositions.pos4[ i ] );
@@ -383,6 +384,8 @@ void calibrate( ) {
             int newPos1, newPos2, newPos3, newPos4, newStep, newInterval, cnt;
         
             Serial.print(" -> ");
+            printCranePositions( i );
+            
             cnt = readConfigArguments( newPos1, newPos2, newPos3, newPos4, 
                                        newInterval, newStep );
         
@@ -392,13 +395,14 @@ void calibrate( ) {
             }
             else if ( cnt == 6 ) {
 
-                cranePositions.pos1[ i ]  = clamp16( newPos1, 1000, 2000 );
-                cranePositions.pos2[ i ]  = clamp16( newPos2, 1000, 2000 );    
-                cranePositions.pos3[ i ]  = clamp16( newPos3, 1000, 2000 );
-                cranePositions.pos4[ i ]  = clamp16( newPos4, 1000, 2000 );
-                cranePositions.stepSizeUs[ i ]  = clamp16( newStep, 2, 20 );
-                cranePositions.stepIntervalMs[ i ] = clamp16( newInterval, 4, 100 );
+                cranePositions.pos1[ i ]            = clamp16( newPos1, 1000, 2000 );
+                cranePositions.pos2[ i ]            = clamp16( newPos2, 1000, 2000 );    
+                cranePositions.pos3[ i ]            = clamp16( newPos3, 1000, 2000 );
+                cranePositions.pos4[ i ]            = clamp16( newPos4, 1000, 2000 );
+                cranePositions.stepIntervalMs[ i ]  = clamp16( newInterval, 4, 100 );
+                cranePositions.stepSizeUs[ i ]      = clamp16( newStep, 2, 20 );
 
+                applyCraneSettingsToRuntime( );
                 demoCraneSettings( i );
             } 
             else Serial.println( "Expected six integers" );
@@ -470,7 +474,7 @@ void handleInputs( ) {
 
     if ( inputPressed[ BUTTON_CALIB ] ) {
       
-        calibrate();
+        calibrate( );
     }
 
     harborData[ 0 ].state = inputState[ CONTACT_IN_1 ] ? HARBOR_ACTIVE : HARBOR_IDLE;
@@ -489,7 +493,7 @@ void handleServo( int i ) {
 
     uint32_t now = millis();
 
-    Crane &c = crane[i];
+    Crane &c = crane[ i ];
 
     if ( ! c.moving ) return;
 
@@ -507,7 +511,7 @@ void handleServo( int i ) {
 
     float diff = c.targetPos - c.pos;
 
-    if ( abs(diff) <= c.stepSizeUs ) {
+    if ( abs( diff ) <= c.stepSizeUs ) {
 
         c.pos = c.targetPos;
         c.moving = false;
@@ -522,13 +526,19 @@ void handleServo( int i ) {
 }
 
 //----------------------------------------------------------------------------------------
-// Run through all the servos.
-//
+// Run through all the servos. We do this only for active harbors.
 //
 //----------------------------------------------------------------------------------------
 void handleServos( ) {
 
-   for ( int i = 0; i < NUM_CRANES; i++ ) handleServo( i );
+    for ( int i = 0; i < NUM_HARBORS; i++ ) {
+
+        if ( harborData[ i ].state == HARBOR_ACTIVE ) {
+
+            handleServo( harborData[ i ].cranes[ 0 ] );
+            handleServo( harborData[ i ].cranes[ 1 ] );
+        }
+    }
 }
 
 //----------------------------------------------------------------------------------------
@@ -536,9 +546,9 @@ void handleServos( ) {
 // target position and sets the servo parameters accordingly.
 //
 //----------------------------------------------------------------------------------------
-void moveServo(int i, float target) {
+void moveServo( int i, float target) {
 
-    Crane &c = crane[i];
+    Crane &c = crane[ i ];
 
     c.targetPos       = target;
     c.moving          = true;
@@ -546,7 +556,7 @@ void moveServo(int i, float target) {
 
     #if 1
     Serial.print("Move servo ");
-    Serial.print(i);
+    Serial.print( i );
     Serial.print(" to ");
     Serial.print( target );
     Serial.print( " time: " );
@@ -560,15 +570,11 @@ void moveServo(int i, float target) {
 // Crane behavior. The crane behavior updates the state of each crane and sets the target
 // position accordingly. The stateUntil field is used to implement timed behavior, e.g. 
 // the crane stays in the LOAD state for a certain time before moving to the next state.
-// The activation chance and speed of the cranes depend on the harbor state. When the
-// harbor is active, the cranes are more likely to activate and move faster. When the
-// harbor is idle, the cranes are less likely to activate and move slower. The crane
-// behavior is called periodically from the harbor behavior to update the state of each
-// crane based on the current harbor state and the crane's current state. The behavior
-// implements a simple state machine for each crane, where the crane transitions between
-// the IDLE, MOVE_TO_PICKUP, LOAD, MOVE_TO_DROPOFF, and UNLOAD states based on the 
-// current state and the harbor state. The behavior also uses random timers to create
-// a more natural and dynamic behavior for the cranes.
+// The activation chance depends on the harbor state. The crane behavior implements a 
+// simple state machine for each crane, where the crane transitions between the IDLE, 
+// MOVE_TO_PICKUP, LOAD, MOVE_TO_DROPOFF, and UNLOAD states based on the current state
+// and the harbor state. The behavior also uses random timers to create a more natural
+// and dynamic behavior for the cranes.
 //
 //----------------------------------------------------------------------------------------
 void craneBehavior( int harbor, int i ) {
@@ -681,7 +687,7 @@ void setupCranes( ) {
 
     for ( int i = 0; i < NUM_CRANES; i++ ) {
 
-        servos[ i ].attach( servoPins[ i ] );
+        servos[ i ].attach( servoPins[ i ], 1000, 2000 );
 
         crane[ i ].state          = IDLE;
         crane[ i ].pos            = 1500;
@@ -742,7 +748,7 @@ void testRun( ) {
 //
 //----------------------------------------------------------------------------------------
 void setup( ) {
-  
+
     setupConsoleIo( );
     setupEEPROM( );
     setupInputs( );
