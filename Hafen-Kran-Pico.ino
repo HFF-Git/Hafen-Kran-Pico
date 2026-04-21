@@ -5,7 +5,7 @@
 //----------------------------------------------------------------------------------------
 // This application controls the movement of cranes in a set of harbors. The application
 // uses a number of servos to control the cranes and a number of inputs to detect enable
-// activity in the barbors. The application is designed to run on Arduino IDE-compatible
+// activity in the harbors. The application is designed to run on Arduino IDE-compatible
 // microcontrollers and uses the Servo library for servo control. 
 //
 // The application is structured into several sections: pin and system declarations,
@@ -68,6 +68,7 @@ bool            inputReleased[NUM_INPUTS];
 bool            prevState[ NUM_INPUTS ];
 bool            lastRawState[ NUM_INPUTS ];
 uint32_t        lastChangeTime[ NUM_INPUTS ];
+
 const uint32_t  debounceTime = 30;
 
 enum NamedButtons : int {
@@ -101,7 +102,7 @@ CranePositions cranePositions;
 // Harbor Declarations. A harbor can be in one of two states: HARBOR_IDLE and
 // HARBOR_ACTIVE. Each harbor has two cranes. We keep it in an array of four harbors
 // with two cranes. The harbor data structure records the state and a timestamp for 
-// time related harbor for eadh harbor.
+// time related harbor for each harbor.
 //
 //----------------------------------------------------------------------------------------
 enum HarborState { 
@@ -207,7 +208,7 @@ void printCranePositions( int i ) {
 //----------------------------------------------------------------------------------------
 // Initialize the EEPROM facility. The EEPROM stores the crane data. We need to pass 
 // the size of the used storage. The PICO does not have an EEPROM, so it uses some 
-// part of flash for this purpose. Note that the nuber of flash writes are very limited,
+// part of flash for this purpose. Note that the number of flash writes are very limited,
 // so we should not do this very often.
 //
 //----------------------------------------------------------------------------------------
@@ -256,7 +257,7 @@ void applyCraneSettingsToRuntime( ) {
 // Update crane settings in EEPROM. The routine writes the current crane settings to
 // the EEPROM. The routine is called after the calibration process to save the new 
 // settings. The PICO does not have an EEPROM, so it uses some part of flash for this
-// purpose. Note that the nuber of flash writes are very limited, so we should not do
+// purpose. Note that the number of flash writes are very limited, so we should not do
 // this very often.
 //
 //----------------------------------------------------------------------------------------
@@ -298,8 +299,6 @@ int readLine( String &out ) {
 // We also read in the speed value, which is a float. The routine returns the number of
 // values read. If the input is not in the expected format, the routine returns -1. 
 // The routine is used in the calibration process to read the new settings for a crane. 
-// The expected input format is: "pos1 pos2 pos3 pos4 speed", where pos1 to pos4 are 
-// integers and speed is a float.
 //
 //----------------------------------------------------------------------------------------
 int readConfigArguments( int &a, int &b, int &c, int &d, int &e, int &f ) {
@@ -361,7 +360,7 @@ void demoCraneSettings( int i ) {
 
 //----------------------------------------------------------------------------------------
 // Calibration processing for a servo. The routine is a bit crude. We list the current 
-// setting and then prompt for each servo. For each servo either four values are entered
+// setting and then prompt for each servo. For each servo either six values are entered
 // or just a carriage return. In the latter case, the current values set are retained 
 // and we move to the next servo. 
 //
@@ -485,7 +484,7 @@ void handleInputs( ) {
 
 //----------------------------------------------------------------------------------------
 // Update the servos. The routine is called periodically from within the main loop. 
-// The current position of each servo a is updated based on the target position and 
+// The current position of each servo is updated based on the target position and 
 // time to get there. 
 //
 //----------------------------------------------------------------------------------------
@@ -543,7 +542,8 @@ void handleServos( ) {
 
 //----------------------------------------------------------------------------------------
 // Move the servo to the target position. The routine calculates the distance to the 
-// target position and sets the servo parameters accordingly.
+// target position and sets the servo parameters accordingly. We have a little debug
+// printout for initial tests.
 //
 //----------------------------------------------------------------------------------------
 void moveServo( int i, float target) {
@@ -567,9 +567,11 @@ void moveServo( int i, float target) {
 }
 
 //----------------------------------------------------------------------------------------
-// Crane behavior. The crane behavior updates the state of each crane and sets the target
-// position accordingly. The stateUntil field is used to implement timed behavior, e.g. 
-// the crane stays in the LOAD state for a certain time before moving to the next state.
+// Crane behavior. The crane behavior updates the state of each crane and sets the 
+// target position accordingly. The stateUntil field is used to implement timed 
+// behavior, e.g. the crane stays in the LOAD state for a certain time before moving
+// to the next state.
+//
 // The activation chance depends on the harbor state. The crane behavior implements a 
 // simple state machine for each crane, where the crane transitions between the IDLE, 
 // MOVE_TO_PICKUP, LOAD, MOVE_TO_DROPOFF, and UNLOAD states based on the current state
@@ -700,7 +702,7 @@ void setupCranes( ) {
 }
 
 //----------------------------------------------------------------------------------------
-// A litttle helper to see if we can handle a servo. Used for debugging. The servo
+// A little helper to see if we can handle a servo. Used for servo testing. The servo
 // sweeps up and down. We use servo slot 0.
 //
 //----------------------------------------------------------------------------------------
@@ -741,7 +743,7 @@ void testRun( ) {
 
 //----------------------------------------------------------------------------------------
 // The setup routine initializes the console I/O, the input system, and the servo 
-// sysrems. It also initializes the state of each crane and the harbor. The cranes 
+// systems. It also initializes the state of each crane and the harbor. The cranes 
 // start in the IDLE state with a target position of 90 degrees. The harbor starts 
 // in the HARBOR_IDLE state. It also initializes the state of each crane and the 
 // harbor.
