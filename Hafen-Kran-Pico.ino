@@ -668,6 +668,8 @@ void harborBehavior( ) {
 //----------------------------------------------------------------------------------------
 void setupConsoleIo( ) {
 
+    delay( 2000 );
+
     Serial.begin( 115200 );  
     
     uint32_t start = millis( ); 
@@ -758,7 +760,7 @@ void setup( ) {
     setupCranes( );
     applyCraneSettingsToRuntime( );
 
-    // testRun( );
+    testRun( );
 }
 
 //----------------------------------------------------------------------------------------
@@ -774,4 +776,5 @@ void loop( ) {
     handleInputs( );
     harborBehavior( );
     handleServos( );
+    delay( 1 );
 }
